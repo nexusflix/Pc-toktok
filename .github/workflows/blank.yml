@@ -5,34 +5,30 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
   secure-rdp:
     runs-on: windows-latest
-
-    # Mantém margem antes do limite de 6 horas do runner.
     timeout-minutes: 350
 
     env:
       RDP_USER: Skyro
       BACKUP_RETENTION: 5
       BACKUP_INTERVAL_SECONDS: 600
-      MAX_RUNTIME_SECONDS: 33600
+      MAX_RUNTIME_SECONDS: 33000
 
     steps:
 
-      # ============================================================
-      # 1. CONFIGURAÇÃO BASE DO WINDOWS / RDP
-      # ============================================================
+      # =========================================================
+      # 1. CONFIGURAÇÃO DO RDP Daniel
+      # =========================================================
       - name: Configure Core RDP Settings
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host ""
           Write-Host "=========================================="
-          Write-Host "       CONFIGURANDO WINDOWS RDP"
+          Write-Host " CONFIGURANDO WINDOWS RDP"
           Write-Host "=========================================="
 
           Set-ItemProperty `
@@ -53,7 +49,7 @@ jobs:
             -Value 0 `
             -Force
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
 
           netsh advfirewall firewall add rule `
             name="RDP-Tailscale" `
@@ -62,115 +58,332 @@ jobs:
             protocol=TCP `
             localport=3389
 
-          Set-Service `
-            -Name TermService `
-            -StartupType Automatic
+          Restart-Service -Name TermService -Force
 
-          Restart-Service `
-            -Name TermService `
-            -Force
+          Write-Host "RDP configurado com sucesso."
 
-          Write-Host "RDP configurado."
 
-      # ============================================================
-      # 2. CRIA / ATUALIZA USUÁRIO ADMINISTRADOR
-      # ============================================================
-      - name: Create RDP Administrator
+      # =========================================================
+      # 2. CRIAR USUÁRIO ADMINISTRADOR
+      # =========================================================
+      - name: Create RDP User with Secure Password
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $userName = $env:RDP_USER
+          Write-Host "=========================================="
+          Write-Host " CRIANDO USUÁRIO ADMINISTRADOR"
+          Write-Host "=========================================="
 
-          $upper   = [char[]](65..90)
-          $lower   = [char[]](97..122)
-          $numbers = [char[]](48..57)
+          Add-Type -AssemblyName System.Security
 
-          # Conjunto de símbolos mais compatível com RDP/Windows.
-          $special = [char[]](
-            33..47 +
-            58..64 +
-            91..96 +
-            123..126
-          )
+          $charSet = @{
+              Upper   = [char[]](65..90)
+              Lower   = [char[]](97..122)
+              Number  = [char[]](48..57)
+              Special = (
+                  [char[]](33..47) +
+                  [char[]](58..64) +
+                  [char[]](91..96) +
+                  [char[]](123..126)
+              )
+          }
 
-          $passwordChars = @()
+          $rawPassword = @()
 
-          $passwordChars += $upper   | Get-Random -Count 4
-          $passwordChars += $lower   | Get-Random -Count 4
-          $passwordChars += $numbers | Get-Random -Count 4
-          $passwordChars += $special | Get-Random -Count 4
+          $rawPassword += $charSet.Upper   | Get-Random -Count 4
+          $rawPassword += $charSet.Lower   | Get-Random -Count 4
+          $rawPassword += $charSet.Number  | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
 
           $password = -join (
-            $passwordChars |
-            Sort-Object { Get-Random }
+              $rawPassword |
+              Sort-Object { Get-Random }
           )
 
-          $securePassword = ConvertTo-SecureString `
-            $password `
-            -AsPlainText `
-            -Force
+          $securePass = ConvertTo-SecureString `
+              $password `
+              -AsPlainText `
+              -Force
 
-          $existing = Get-LocalUser `
-            -Name $userName `
-            -ErrorAction SilentlyContinue
+          # Remove usuário anterior se existir
+          $existing = Get-LocalUser -Name $env:RDP_USER -ErrorAction SilentlyContinue
 
           if ($existing) {
-
-            Write-Host "Usuário $userName já existe."
-
-            Set-LocalUser `
-              -Name $userName `
-              -Password $securePassword
-
+              Write-Host "Usuário existente encontrado. Removendo..."
+              Remove-LocalUser -Name $env:RDP_USER
           }
-          else {
 
-            Write-Host "Criando usuário $userName..."
-
-            New-LocalUser `
-              -Name $userName `
-              -Password $securePassword `
-              -AccountNeverExpires `
-              -PasswordNeverExpires:$true
-          }
+          New-LocalUser `
+            -Name $env:RDP_USER `
+            -Password $securePass `
+            -AccountNeverExpires `
+            -PasswordNeverExpires
 
           Add-LocalGroupMember `
             -Group "Administrators" `
-            -Member $userName `
-            -ErrorAction SilentlyContinue
+            -Member $env:RDP_USER
 
           Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
-            -Member $userName `
-            -ErrorAction SilentlyContinue
+            -Member $env:RDP_USER
 
-          if (-not (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue)) {
-            Write-Error "Não foi possível criar o usuário."
-            exit 1
-          }
-
+          # Guarda somente dentro do ambiente do job
           "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
 
+          # Mascara a senha caso apareça acidentalmente
+          Write-Output "::add-mask::$password"
+
+          if (-not (Get-LocalUser -Name $env:RDP_USER -ErrorAction SilentlyContinue)) {
+              Write-Error "Falha ao criar usuário RDP."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Usuário: $env:RDP_USER"
+          Write-Host "Senha criada com sucesso."
+          Write-Host "A senha não será exibida neste log."
+
+
+      # =========================================================
+      # 3. VERIFICAR TAILSCALE SECRET
+      # =========================================================
+      - name: Validate Tailscale Secret
+        shell: powershell
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host " VERIFICANDO TAILSCALE"
+          Write-Host "=========================================="
+
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTH_KEY)) {
+              Write-Error ""
+              Write-Error "TAILSCALE_AUTH_KEY está vazio."
+              Write-Error ""
+              Write-Error "Crie o secret:"
+              Write-Error "GitHub -> Settings -> Secrets and variables -> Actions"
+              Write-Error ""
+              Write-Error "Nome EXATO:"
+              Write-Error "TAILSCALE_AUTH_KEY"
+              Write-Error ""
+              Write-Error "Depois execute o workflow novamente."
+              exit 1
+          }
+
+          Write-Host "Secret Tailscale encontrado."
+
+
+      # =========================================================
+      # 4. INSTALAR TAILSCALE
+      # =========================================================
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host " INSTALANDO TAILSCALE"
+          Write-Host "=========================================="
+
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest `
+            -Uri $tsUrl `
+            -OutFile $installerPath `
+            -UseBasicParsing
+
+          Start-Process `
+            msiexec.exe `
+            -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
+            -Wait
+
+          Remove-Item `
+            $installerPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+              Write-Error "tailscale.exe não foi encontrado após a instalação."
+              exit 1
+          }
+
+          Write-Host "Tailscale instalado."
+
+
+      # =========================================================
+      # 5. CONECTAR TAILSCALE
+      # =========================================================
+      - name: Establish Tailscale Connection
+        shell: powershell
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host " CONECTANDO AO TAILSCALE"
+          Write-Host "=========================================="
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+              Write-Error "tailscale.exe não encontrado."
+              exit 1
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTH_KEY)) {
+              Write-Error "TAILSCALE_AUTH_KEY está vazio."
+              exit 1
+          }
+
+          Write-Host "Iniciando conexão..."
+
+          # Usa variável de ambiente.
+          # A chave não fica escrita diretamente no comando.
+          & $tailscale up `
+            --auth-key="$env:TS_AUTH_KEY" `
+            --hostname="gh-runner-$env:GITHUB_RUN_ID" `
+            --accept-dns=true `
+            --accept-routes=true
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Falha ao executar tailscale up."
+              exit 1
+          }
+
+          Write-Host "Tailscale up executado."
+
+          # =====================================================
+          # AGUARDAR IP
+          # =====================================================
+
+          $tsIP = $null
+
+          for ($i = 1; $i -le 30; $i++) {
+
+              $candidate = (
+                  & $tailscale ip -4 2>$null |
+                  Select-Object -First 1
+              )
+
+              if ($candidate) {
+
+                  $candidate = $candidate.Trim()
+
+                  if ($candidate -match '^\d{1,3}(\.\d{1,3}){3}$') {
+
+                      $tsIP = $candidate
+                      break
+                  }
+              }
+
+              Write-Host "Aguardando IP Tailscale... tentativa $i/30"
+
+              Start-Sleep -Seconds 5
+          }
+
+          if (-not $tsIP) {
+
+              Write-Host ""
+              Write-Host "STATUS TAILSCALE:"
+              & $tailscale status
+
+              Write-Error "Não foi possível obter o IP Tailscale."
+              exit 1
+          }
+
+          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
           Write-Host ""
           Write-Host "=========================================="
-          Write-Host "              RDP CREDENTIALS"
-          Write-Host "=========================================="
-          Write-Host "Usuário : $userName"
-          Write-Host "Senha   : $password"
+          Write-Host " TAILSCALE CONECTADO"
+          Write-Host " IP: $tsIP"
           Write-Host "=========================================="
           Write-Host ""
 
-      # ============================================================
-      # 3. PREPARA PASTAS DE BACKUP
-      # ============================================================
+
+      # =========================================================
+      # 6. VERIFICAR TAILSCALE
+      # =========================================================
+      - name: Verify Tailscale Connection
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          Write-Host "=========================================="
+          Write-Host " STATUS TAILSCALE"
+          Write-Host "=========================================="
+
+          & $tailscale status
+
+          Write-Host ""
+          Write-Host "IP Tailscale:"
+          Write-Host $env:TAILSCALE_IP
+
+
+      # =========================================================
+      # 7. VERIFICAR PORTA RDP
+      # =========================================================
+      - name: Verify RDP Accessibility
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=========================================="
+          Write-Host " TESTANDO RDP"
+          Write-Host "=========================================="
+
+          $rdpPort = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if (-not $rdpPort) {
+
+              Write-Host "Porta 3389 não está ouvindo."
+              Write-Host "Tentando reiniciar TermService..."
+
+              Restart-Service `
+                -Name TermService `
+                -Force
+
+              Start-Sleep -Seconds 5
+
+              $rdpPort = Get-NetTCPConnection `
+                -LocalPort 3389 `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+          }
+
+          if (-not $rdpPort) {
+              Write-Error "RDP não está ouvindo na porta 3389."
+              exit 1
+          }
+
+          Write-Host "Porta 3389 está ativa."
+
+          Write-Host ""
+          Write-Host "IP Tailscale: $env:TAILSCALE_IP"
+
+
+      # =========================================================
+      # 8. CRIAR PASTA DE BACKUP
+      # =========================================================
       - name: Prepare Backup System
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          $backupRoot = "C:\RDP\Backup"
-          $configRoot = "C:\RDP"
+          $backupRoot = "C:\RDP\Backups"
 
           New-Item `
             -ItemType Directory `
@@ -179,682 +392,196 @@ jobs:
 
           New-Item `
             -ItemType Directory `
-            -Path $configRoot `
+            -Path "C:\RDP" `
             -Force | Out-Null
-
-          $config = @{
-            username          = $env:RDP_USER
-            backup_interval   = [int]$env:BACKUP_INTERVAL_SECONDS
-            retention         = [int]$env:BACKUP_RETENTION
-            restore_enabled   = $true
-            tailscale_enabled = $true
-            rdp_enabled       = $true
-          }
-
-          $config |
-            ConvertTo-Json -Depth 5 |
-            Set-Content `
-              -Path "C:\RDP\config.json" `
-              -Encoding UTF8
 
           Write-Host "Sistema de backup preparado."
 
-      # ============================================================
-      # 4. RESTAURA O ÚLTIMO BACKUP DISPONÍVEL
-      # ============================================================
-      - name: Restore Previous Backup
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = "Stop"
 
-          $owner = "${{ github.repository_owner }}"
-          $repo  = "${{ github.event.repository.name }}"
-
-          $headers = @{
-            Authorization = "Bearer $env:GH_TOKEN"
-            Accept = "application/vnd.github+json"
-            "X-GitHub-Api-Version" = "2022-11-28"
-          }
-
-          Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "          PROCURANDO BACKUP"
-          Write-Host "=========================================="
-
-          try {
-
-            $url =
-              "https://api.github.com/repos/$owner/$repo/actions/artifacts?per_page=100"
-
-            $result = Invoke-RestMethod `
-              -Uri $url `
-              -Headers $headers `
-              -Method Get
-
-            $backup = $result.artifacts |
-              Where-Object {
-                $_.name -like "rdp-backup-*" -and
-                $_.expired -eq $false
-              } |
-              Sort-Object created_at -Descending |
-              Select-Object -First 1
-
-            if (-not $backup) {
-
-              Write-Host "Nenhum backup anterior encontrado."
-              exit 0
-            }
-
-            Write-Host "Backup encontrado:"
-            Write-Host $backup.name
-            Write-Host "Data: $($backup.created_at)"
-
-            $zip = "C:\RDP\previous-backup.zip"
-
-            $download =
-              "https://api.github.com/repos/$owner/$repo/actions/artifacts/$($backup.id)/zip"
-
-            Invoke-WebRequest `
-              -Uri $download `
-              -Headers $headers `
-              -OutFile $zip
-
-            $extract = "C:\RDP\Restore"
-
-            if (Test-Path $extract) {
-              Remove-Item `
-                $extract `
-                -Recurse `
-                -Force
-            }
-
-            New-Item `
-              -ItemType Directory `
-              -Path $extract `
-              -Force | Out-Null
-
-            Expand-Archive `
-              -Path $zip `
-              -DestinationPath $extract `
-              -Force
-
-            $profileZip = Get-ChildItem `
-              -Path $extract `
-              -Filter "SkyroProfile.zip" `
-              -Recurse |
-              Select-Object -First 1
-
-            if (-not $profileZip) {
-
-              Write-Warning "Backup não contém SkyroProfile.zip."
-              exit 0
-            }
-
-            $profileExtract = "C:\RDP\ProfileRestore"
-
-            if (Test-Path $profileExtract) {
-              Remove-Item `
-                $profileExtract `
-                -Recurse `
-                -Force
-            }
-
-            New-Item `
-              -ItemType Directory `
-              -Path $profileExtract `
-              -Force | Out-Null
-
-            Expand-Archive `
-              -Path $profileZip.FullName `
-              -DestinationPath $profileExtract `
-              -Force
-
-            Write-Host "Restaurando arquivos..."
-
-            robocopy `
-              $profileExtract `
-              "C:\Users\$env:RDP_USER" `
-              /E `
-              /COPY:DAT `
-              /DCOPY:DAT `
-              /R:2 `
-              /W:2 `
-              /XJ `
-              /NFL `
-              /NDL `
-              /NP
-
-            Write-Host "Restauração concluída."
-
-          }
-          catch {
-
-            Write-Warning "Falha na restauração:"
-            Write-Warning $_.Exception.Message
-            Write-Host "O computador continuará normalmente."
-          }
-
-      # ============================================================
-      # 5. INSTALA TAILSCALE
-      # ============================================================
-      - name: Install Tailscale
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $url =
-            "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-
-          $installer =
-            "$env:TEMP\tailscale.msi"
-
-          Write-Host "Baixando Tailscale..."
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $installer
-
-          Start-Process `
-            msiexec.exe `
-            -ArgumentList `
-              "/i",
-              "`"$installer`"",
-              "/quiet",
-              "/norestart" `
-            -Wait
-
-          Remove-Item `
-            $installer `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-          Write-Host "Tailscale instalado."
-
-      # ============================================================
-      # 6. CONECTA TAILSCALE
-      # ============================================================
-      - name: Establish Tailscale Connection
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $tailscale =
-            "$env:ProgramFiles\Tailscale\tailscale.exe"
-
-          if (-not (Test-Path $tailscale)) {
-
-            Write-Error "tailscale.exe não encontrado."
-            exit 1
-          }
-
-          & $tailscale up `
-            --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" `
-            --hostname="gh-runner-$env:GITHUB_RUN_ID"
-
-          $tsIP = $null
-
-          for ($i = 1; $i -le 30; $i++) {
-
-            $candidate =
-              (& $tailscale ip -4 2>$null |
-              Select-Object -First 1)
-
-            if ($candidate) {
-
-              $candidate = $candidate.Trim()
-
-              if ($candidate -match '^\d+\.\d+\.\d+\.\d+$') {
-
-                $tsIP = $candidate
-                break
-              }
-            }
-
-            Write-Host "Aguardando IP Tailscale... tentativa $i/30"
-
-            Start-Sleep -Seconds 5
-          }
-
-          if (-not $tsIP) {
-
-            Write-Error "Não foi possível obter o IP Tailscale."
-            exit 1
-          }
-
-          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-
-          Write-Host ""
-          Write-Host "Tailscale IP: $tsIP"
-          Write-Host ""
-
-      # ============================================================
-      # 7. VERIFICA RDP
-      # ============================================================
-      - name: Verify RDP
-        shell: powershell
-        run: |
-          Write-Host "Verificando porta 3389..."
-
-          $result = Test-NetConnection `
-            -ComputerName $env:TAILSCALE_IP `
-            -Port 3389 `
-            -WarningAction SilentlyContinue
-
-          if (-not $result.TcpTestSucceeded) {
-
-            Write-Error "RDP não está acessível."
-            exit 1
-          }
-
-          Write-Host "RDP está ONLINE."
-
-      # ============================================================
-      # 8. CRIA BACKUP
-      # ============================================================
-      - name: Create Backup
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          function New-RDPBackup {
-
-            Write-Host ""
-            Write-Host "=========================================="
-            Write-Host "          CRIANDO BACKUP"
-            Write-Host "=========================================="
-
-            $root =
-              "C:\RDP\Backup"
-
-            $staging =
-              "$root\Profile"
-
-            $zip =
-              "$root\SkyroProfile.zip"
-
-            if (Test-Path $root) {
-
-              Remove-Item `
-                $root `
-                -Recurse `
-                -Force
-            }
-
-            New-Item `
-              -ItemType Directory `
-              -Path $staging `
-              -Force | Out-Null
-
-            $source =
-              "C:\Users\$env:RDP_USER"
-
-            $items = @(
-              "Desktop",
-              "Documents",
-              "Downloads",
-              "Pictures",
-              "Videos",
-              "Music",
-              "Favorites",
-              "AppData\Roaming"
-            )
-
-            foreach ($item in $items) {
-
-              $src =
-                Join-Path $source $item
-
-              $dst =
-                Join-Path $staging $item
-
-              if (Test-Path $src) {
-
-                New-Item `
-                  -ItemType Directory `
-                  -Path (Split-Path $dst) `
-                  -Force | Out-Null
-
-                robocopy `
-                  $src `
-                  $dst `
-                  /E `
-                  /COPY:DAT `
-                  /DCOPY:DAT `
-                  /R:1 `
-                  /W:1 `
-                  /XJ `
-                  /NFL `
-                  /NDL `
-                  /NP `
-                  /XD `
-                    "$src\AppData\Local\Temp"
-
-                if ($LASTEXITCODE -gt 7) {
-
-                  Write-Warning `
-                    "Robocopy retornou código $LASTEXITCODE."
-                }
-              }
-            }
-
-            if (-not (Test-Path "$staging\*")) {
-
-              Write-Warning "Nada para compactar."
-              return
-            }
-
-            Compress-Archive `
-              -Path "$staging\*" `
-              -DestinationPath $zip `
-              -CompressionLevel Optimal `
-              -Force
-
-            $hash =
-              (Get-FileHash `
-                -Path $zip `
-                -Algorithm SHA256).Hash
-
-            Set-Content `
-              -Path "$root\SHA256.txt" `
-              -Value $hash `
-              -Encoding ASCII
-
-            Write-Host ""
-            Write-Host "Backup criado."
-            Write-Host "SHA256: $hash"
-          }
-
-          New-RDPBackup
-
-      # ============================================================
-      # 9. PUBLICA BACKUP INICIAL
-      # ============================================================
-      - name: Upload Initial Backup
-        uses: actions/upload-artifact@v4
-        with:
-          name: rdp-backup-${{ github.run_id }}-initial
-          path: C:\RDP\Backup
-          if-no-files-found: warn
-          retention-days: 30
-          compression-level: 0
-
-      # ============================================================
-      # 10. MONITORAMENTO + BACKUP FINAL
-      # ============================================================
-      - name: Maintain RDP
+      # =========================================================
+      # 9. STATUS FINAL + MANTER RDP
+      # =========================================================
+      - name: Maintain RDP Connection
         shell: powershell
         run: |
           $ErrorActionPreference = "Continue"
 
-          $startTime =
-            Get-Date
+          $startTime = Get-Date
 
-          $lastBackup =
-            Get-Date
-
-          $backupInterval =
-            [int]$env:BACKUP_INTERVAL_SECONDS
-
-          # 5h40 aproximadamente.
-          $maxRuntime =
-            [int]$env:MAX_RUNTIME_SECONDS
+          $interval = [int]$env:BACKUP_INTERVAL_SECONDS
+          $maxRuntime = [int]$env:MAX_RUNTIME_SECONDS
 
           Write-Host ""
-          Write-Host "╔══════════════════════════════════════════╗"
-          Write-Host "║              NEXUS RDP                  ║"
-          Write-Host "╠══════════════════════════════════════════╣"
-          Write-Host "║ Status     : ONLINE                     ║"
-          Write-Host "║ User       : $env:RDP_USER"
-          Write-Host "║ Tailscale  : $env:TAILSCALE_IP"
-          Write-Host "║ RDP        : 3389                       ║"
-          Write-Host "║ Backup     : ATIVO                      ║"
-          Write-Host "║ Intervalo  : 10 minutos                 ║"
-          Write-Host "╚══════════════════════════════════════════╝"
+          Write-Host "=========================================="
+          Write-Host "       NEXUS RDP ONLINE"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "IP Tailscale : $env:TAILSCALE_IP"
+          Write-Host "Usuário      : $env:RDP_USER"
+          Write-Host "Senha        : criada no passo anterior"
+          Write-Host "Porta        : 3389"
+          Write-Host ""
+          Write-Host "=========================================="
           Write-Host ""
 
-          function Restart-RDPServices {
-
-            Write-Host ""
-            Write-Host "Reiniciando serviços RDP..."
-
-            try {
-
-              Restart-Service `
-                -Name TermService `
-                -Force `
-                -ErrorAction Stop
-
-              Write-Host "TermService reiniciado."
-
-            }
-            catch {
-
-              Write-Warning `
-                "Não foi possível reiniciar TermService."
-            }
-
-            Start-Sleep -Seconds 3
-
-            try {
-
-              $ts =
-                "$env:ProgramFiles\Tailscale\tailscale.exe"
-
-              if (Test-Path $ts) {
-
-                $state =
-                  & $ts status 2>$null
-
-                Write-Host "Tailscale verificado."
-              }
-
-            }
-            catch {
-
-              Write-Warning `
-                "Falha na verificação do Tailscale."
-            }
-          }
-
-          function New-PeriodicBackup {
-
-            Write-Host ""
-            Write-Host "[$(Get-Date)] Backup periódico..."
-
-            $root =
-              "C:\RDP\Backup"
-
-            $staging =
-              "$root\Profile"
-
-            $zip =
-              "$root\SkyroProfile.zip"
-
-            if (Test-Path $staging) {
-
-              Remove-Item `
-                $staging `
-                -Recurse `
-                -Force `
-                -ErrorAction SilentlyContinue
-            }
-
-            New-Item `
-              -ItemType Directory `
-              -Path $staging `
-              -Force | Out-Null
-
-            $source =
-              "C:\Users\$env:RDP_USER"
-
-            $items = @(
-              "Desktop",
-              "Documents",
-              "Downloads",
-              "Pictures",
-              "Videos",
-              "Music",
-              "Favorites",
-              "AppData\Roaming"
-            )
-
-            foreach ($item in $items) {
-
-              $src =
-                Join-Path $source $item
-
-              $dst =
-                Join-Path $staging $item
-
-              if (Test-Path $src) {
-
-                New-Item `
-                  -ItemType Directory `
-                  -Path (Split-Path $dst) `
-                  -Force | Out-Null
-
-                robocopy `
-                  $src `
-                  $dst `
-                  /E `
-                  /COPY:DAT `
-                  /DCOPY:DAT `
-                  /R:1 `
-                  /W:1 `
-                  /XJ `
-                  /NFL `
-                  /NDL `
-                  /NP
-              }
-            }
-
-            if (Test-Path "$staging\*") {
-
-              Compress-Archive `
-                -Path "$staging\*" `
-                -DestinationPath $zip `
-                -CompressionLevel Optimal `
-                -Force
-
-              $hash =
-                (Get-FileHash `
-                  -Path $zip `
-                  -Algorithm SHA256).Hash
-
-              Set-Content `
-                -Path "$root\SHA256.txt" `
-                -Value $hash `
-                -Encoding ASCII
-
-              Write-Host "Backup periódico concluído."
-              Write-Host "SHA256: $hash"
-            }
-
-            $script:lastBackup =
-              Get-Date
-          }
+          $lastBackup = Get-Date
 
           while ($true) {
 
-            $now =
-              Get-Date
+              $elapsed = ((Get-Date) - $startTime).TotalSeconds
 
-            $elapsed =
-              ($now - $startTime).TotalSeconds
+              if ($elapsed -ge $maxRuntime) {
 
-            $sinceBackup =
-              ($now - $lastBackup).TotalSeconds
-
-            # ------------------------------------------------------
-            # BACKUP A CADA 10 MINUTOS
-            # ------------------------------------------------------
-            if ($sinceBackup -ge $backupInterval) {
-
-              New-PeriodicBackup
-            }
-
-            # ------------------------------------------------------
-            # REINICIA SERVIÇOS SE RDP/TCP CAIR
-            # ------------------------------------------------------
-            try {
-
-              $test =
-                Test-NetConnection `
-                  -ComputerName $env:TAILSCALE_IP `
-                  -Port 3389 `
-                  -WarningAction SilentlyContinue `
-                  -InformationLevel Quiet
-
-              if (-not $test) {
-
-                Write-Warning `
-                  "RDP não respondeu. Reiniciando serviços."
-
-                Restart-RDPServices
+                  Write-Host ""
+                  Write-Host "Tempo máximo de segurança atingido."
+                  Write-Host "Encerrando runner normalmente."
+                  break
               }
 
-            }
-            catch {
+              # -------------------------------------------------
+              # HEALTH CHECK RDP
+              # -------------------------------------------------
 
-              Write-Warning `
-                "Erro na verificação RDP."
-            }
+              $rdp = Get-NetTCPConnection `
+                -LocalPort 3389 `
+                -State Listen `
+                -ErrorAction SilentlyContinue
 
-            # ------------------------------------------------------
-            # REINICIA SERVIÇOS PERIODICAMENTE
-            # SEM REINICIAR O WINDOWS
-            # ------------------------------------------------------
-            if (([int]$elapsed % 1800) -lt 30) {
+              if (-not $rdp) {
 
-              Restart-RDPServices
-            }
+                  Write-Host "RDP offline. Reiniciando TermService..."
 
-            # ------------------------------------------------------
-            # MODO DE ENCERRAMENTO SEGURO
-            # ------------------------------------------------------
-            if ($elapsed -ge $maxRuntime) {
+                  Restart-Service `
+                    -Name TermService `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+
+                  Start-Sleep -Seconds 5
+              }
+
+              # -------------------------------------------------
+              # HEALTH CHECK TAILSCALE
+              # -------------------------------------------------
+
+              $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+              $tsIP = (
+                  & $tailscale ip -4 2>$null |
+                  Select-Object -First 1
+              )
+
+              if (-not $tsIP) {
+
+                  Write-Host "Tailscale offline. Tentando reconectar..."
+
+                  if (-not [string]::IsNullOrWhiteSpace($env:TS_AUTH_KEY)) {
+
+                      & $tailscale up `
+                        --auth-key="$env:TS_AUTH_KEY" `
+                        --hostname="gh-runner-$env:GITHUB_RUN_ID" `
+                        --accept-dns=true `
+                        --accept-routes=true
+                  }
+              }
+
+              # -------------------------------------------------
+              # STATUS
+              # -------------------------------------------------
+
+              $now = Get-Date
 
               Write-Host ""
-              Write-Host "=========================================="
-              Write-Host "     LIMITE DE SEGURANÇA ALCANÇADO"
-              Write-Host "=========================================="
-              Write-Host ""
-              Write-Host "Criando último backup..."
-              Write-Host ""
+              Write-Host "[$now] RDP ativo"
+              Write-Host "IP: $env:TAILSCALE_IP"
+              Write-Host "Tempo: $([math]::Round($elapsed / 60, 1)) minutos"
 
-              New-PeriodicBackup
+              # -------------------------------------------------
+              # INTERVALO
+              # -------------------------------------------------
 
-              Write-Host ""
-              Write-Host "Último backup concluído."
-              Write-Host "Encerrando job de forma controlada."
-              Write-Host ""
-
-              break
-            }
-
-            $remaining =
-              [int]($maxRuntime - $elapsed)
-
-            $minutes =
-              [math]::Floor($remaining / 60)
-
-            Write-Host `
-              "[$(Get-Date)] RDP ONLINE | Backup OK | Restante: ${minutes}min"
-
-            Start-Sleep -Seconds 30
+              Start-Sleep -Seconds 60
           }
 
-      # ============================================================
-      # 11. PUBLICA O ÚLTIMO BACKUP
-      # ============================================================
-      - name: Upload Final Backup
+
+      # =========================================================
+      # 10. SALVAR BACKUP FINAL
+      # =========================================================
+      - name: Create Final Backup
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "=========================================="
+          Write-Host " CRIANDO BACKUP FINAL"
+          Write-Host "=========================================="
+
+          $backupRoot = "C:\RDP\Backups"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $backupRoot `
+            -Force | Out-Null
+
+          $backupFile = Join-Path `
+            $backupRoot `
+            "SkyroProfile-$env:GITHUB_RUN_ID.zip"
+
+          $folders = @(
+              "$env:USERPROFILE\Desktop",
+              "$env:USERPROFILE\Documents",
+              "$env:USERPROFILE\Downloads",
+              "$env:USERPROFILE\Pictures",
+              "$env:USERPROFILE\Videos",
+              "$env:USERPROFILE\Music"
+          )
+
+          $existingFolders = @()
+
+          foreach ($folder in $folders) {
+
+              if (Test-Path $folder) {
+                  $existingFolders += $folder
+              }
+          }
+
+          if ($existingFolders.Count -gt 0) {
+
+              Compress-Archive `
+                -Path $existingFolders `
+                -DestinationPath $backupFile `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+              if (Test-Path $backupFile) {
+
+                  $hash = Get-FileHash `
+                    $backupFile `
+                    -Algorithm SHA256
+
+                  "$($hash.Hash)  $($hash.Path)" |
+                    Out-File `
+                      "$backupFile.sha256" `
+                      -Encoding UTF8
+
+                  Write-Host "Backup criado:"
+                  Write-Host $backupFile
+                  Write-Host "SHA256:"
+                  Write-Host $hash.Hash
+              }
+          }
+
+
+      # =========================================================
+      # 11. ENVIAR BACKUP COMO ARTIFACT
+      # =========================================================
+      - name: Upload RDP Backup
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rdp-backup-${{ github.run_id }}-final
-          path: C:\RDP\Backup
+          name: rdp-backup-${{ github.run_id }}
+          path: |
+            C:\RDP\Backups\*.zip
+            C:\RDP\Backups\*.sha256
+          retention-days: 5
           if-no-files-found: warn
-          retention-days: 30
-          compression-level: 0
