@@ -25,7 +25,7 @@ jobs:
     steps:
 
       # =========================================================
-      # 1. CONFIGURAÇÃO DO RDP ghtfg
+      # 1. CONFIGURAÇÃO DO RDP
       # =========================================================
 
       - name: Configure Core RDP Settings
@@ -216,7 +216,54 @@ jobs:
 
 
       # =========================================================
-      # 3. VERIFICAR SECRET TAILSCALE
+      # 3. BAIR E RESTAURAR BACKUP ANTERIOR (SE EXISTIR)
+      # =========================================================
+
+      - name: Download Latest Backup
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          name: rdp-backup-.*
+          name_is_regexp: true
+          path: C:\RDP\Restore
+          search_artifacts: true
+
+      - name: Restore User Profile Backup
+        shell: powershell
+        run: |
+
+          Write-Host "=========================================="
+          Write-Host " VERIFICANDO RESTAURAÇÃO DE BACKUP"
+          Write-Host "=========================================="
+
+          $restoreDir = "C:\RDP\Restore"
+
+          if (Test-Path $restoreDir) {
+
+              $zipFile = Get-ChildItem -Path $restoreDir -Filter "*.zip" | Select-Object -First 1
+
+              if ($zipFile) {
+                  Write-Host "Backup antigo encontrado: $($zipFile.FullName)"
+                  Write-Host "Restaurando arquivos para a pasta do usuário $env:RDP_USER..."
+
+                  $targetUserPath = "C:\Users\$env:RDP_USER"
+
+                  Expand-Archive -Path $zipFile.FullName -DestinationPath $targetUserPath -Force -ErrorAction SilentlyContinue
+
+                  Write-Host "Restauração do backup concluída com sucesso!"
+              } else {
+                  Write-Host "Nenhum arquivo .zip de backup encontrado para restaurar."
+              }
+
+          } else {
+              Write-Host "Nenhum backup de execuções anteriores foi encontrado."
+          }
+
+          Write-Host ""
+
+
+      # =========================================================
+      # 4. VERIFICAR SECRET TAILSCALE
       # =========================================================
 
       - name: Validate Tailscale Secret
@@ -255,7 +302,7 @@ jobs:
 
 
       # =========================================================
-      # 4. INSTALAR TAILSCALE
+      # 5. INSTALAR TAILSCALE
       # =========================================================
 
       - name: Install Tailscale
@@ -316,7 +363,7 @@ jobs:
 
 
       # =========================================================
-      # 5. CONECTAR TAILSCALE
+      # 6. CONECTAR TAILSCALE
       # =========================================================
 
       - name: Establish Tailscale Connection
@@ -445,7 +492,7 @@ jobs:
 
 
       # =========================================================
-      # 6. VERIFICAR TAILSCALE
+      # 7. VERIFICAR TAILSCALE
       # =========================================================
 
       - name: Verify Tailscale Connection
@@ -472,7 +519,7 @@ jobs:
 
 
       # =========================================================
-      # 7. VERIFICAR PORTA RDP
+      # 8. VERIFICAR PORTA RDP
       # =========================================================
 
       - name: Verify RDP Accessibility
@@ -532,7 +579,7 @@ jobs:
 
 
       # =========================================================
-      # 8. PREPARAR BACKUP
+      # 9. PREPARAR BACKUP
       # =========================================================
 
       - name: Prepare Backup System
@@ -564,7 +611,7 @@ jobs:
 
 
       # =========================================================
-      # 9. MOSTRAR DADOS + MANTER RDP
+      # 10. MOSTRAR DADOS + MANTER RDP
       # =========================================================
 
       - name: Maintain RDP Connection
@@ -733,7 +780,7 @@ jobs:
 
 
       # =========================================================
-      # 10. BACKUP FINAL
+      # 11. BACKUP FINAL (EXECUTA SEMPRE, MESMO EM CANCELAMENTO)
       # =========================================================
 
       - name: Create Final Backup
@@ -764,19 +811,21 @@ jobs:
             "DANIEL-Profile-$env:GITHUB_RUN_ID.zip"
 
 
+          $userPath = "C:\Users\$env:RDP_USER"
+
           $folders = @(
 
-              "$env:USERPROFILE\Desktop"
+              "$userPath\Desktop"
 
-              "$env:USERPROFILE\Documents"
+              "$userPath\Documents"
 
-              "$env:USERPROFILE\Downloads"
+              "$userPath\Downloads"
 
-              "$env:USERPROFILE\Pictures"
+              "$userPath\Pictures"
 
-              "$env:USERPROFILE\Videos"
+              "$userPath\Videos"
 
-              "$env:USERPROFILE\Music"
+              "$userPath\Music"
 
           )
 
@@ -830,7 +879,7 @@ jobs:
 
 
       # =========================================================
-      # 11. ENVIAR BACKUP
+      # 12. ENVIAR BACKUP
       # =========================================================
 
       - name: Upload RDP Backup
