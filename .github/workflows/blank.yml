@@ -78,7 +78,36 @@ jobs:
 
 
       # =========================================================
-      # 2. CRIAR USUÁRIO ADMINISTRADOR COM SENHA FIXA
+      # 2. ATIVAR TODAS AS PROTEÇÕES DO WINDOWS SECURITY
+      # =========================================================
+
+      - name: Enable All Windows Security Features
+        shell: powershell
+        run: |
+
+          Write-Host "=========================================="
+          Write-Host " ATIVANDO RECURSOS DE SEGURANÇA DO WINDOWS"
+          Write-Host "=========================================="
+
+          # Garantir serviços ativados
+          Set-Service -Name "WinDefend" -StartupType Automatic -ErrorAction SilentlyContinue
+          Start-Service -Name "WinDefend" -ErrorAction SilentlyContinue
+
+          # Ativar proteção em tempo real, envio de amostras e proteção contra adulteração
+          Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction SilentlyContinue
+          Set-MpPreference -SubmitSamplesConsent 1 -ErrorAction SilentlyContinue
+          Set-MpPreference -DisableTamperProtection $false -ErrorAction SilentlyContinue
+          Set-MpPreference -PUAProtection Enabled -ErrorAction SilentlyContinue
+
+          # Ativar Integridade da Memória / Isolamento do Núcleo (Core Isolation) via Registro
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Name "Enabled" -Value 1 -Force -ErrorAction SilentlyContinue
+
+          Write-Host "Proteções do Windows Security configuradas e ativadas com sucesso."
+          Write-Host ""
+
+
+      # =========================================================
+      # 3. CRIAR USUÁRIO ADMINISTRADOR COM SENHA FIXA
       # =========================================================
 
       - name: Create Fixed RDP User
@@ -183,7 +212,7 @@ jobs:
 
 
       # =========================================================
-      # 3. BAIXAR E RESTAURAR BACKUP ANTERIOR (SE EXISTIR)
+      # 4. BAIXAR E RESTAURAR BACKUP ANTERIOR (SE EXISTIR)
       # =========================================================
 
       - name: Download Latest Backup
@@ -231,7 +260,7 @@ jobs:
 
 
       # =========================================================
-      # 4. VERIFICAR SECRET TAILSCALE
+      # 5. VERIFICAR SECRET TAILSCALE
       # =========================================================
 
       - name: Validate Tailscale Secret
@@ -270,7 +299,7 @@ jobs:
 
 
       # =========================================================
-      # 5. INSTALAR TAILSCALE
+      # 6. INSTALAR TAILSCALE
       # =========================================================
 
       - name: Install Tailscale
@@ -305,7 +334,7 @@ jobs:
 
 
       # =========================================================
-      # 6. CONECTAR TAILSCALE
+      # 7. CONECTAR TAILSCALE
       # =========================================================
 
       - name: Establish Tailscale Connection
@@ -386,7 +415,7 @@ jobs:
 
 
       # =========================================================
-      # 7. VERIFICAR TAILSCALE
+      # 8. VERIFICAR TAILSCALE
       # =========================================================
 
       - name: Verify Tailscale Connection
@@ -409,7 +438,7 @@ jobs:
 
 
       # =========================================================
-      # 8. VERIFICAR PORTA RDP
+      # 9. VERIFICAR PORTA RDP
       # =========================================================
 
       - name: Verify RDP Accessibility
@@ -449,7 +478,7 @@ jobs:
 
 
       # =========================================================
-      # 9. PREPARAR BACKUP
+      # 10. PREPARAR BACKUP
       # =========================================================
 
       - name: Prepare Backup System
@@ -468,7 +497,7 @@ jobs:
 
 
       # =========================================================
-      # 10. MOSTRAR DADOS + MANTER RDP
+      # 11. MOSTRAR DADOS + MANTER RDP
       # =========================================================
 
       - name: Maintain RDP Connection
@@ -562,7 +591,7 @@ jobs:
 
 
       # =========================================================
-      # 11. BACKUP FINAL (EXECUTA SEMPRE, MESMO EM CANCELAMENTO)
+      # 12. BACKUP FINAL (EXECUTA SEMPRE, MESMO EM CANCELAMENTO)
       # =========================================================
 
       - name: Create Final Backup
@@ -623,7 +652,7 @@ jobs:
 
 
       # =========================================================
-      # 12. ENVIAR BACKUP
+      # 13. ENVIAR BACKUP
       # =========================================================
 
       - name: Upload RDP Backup
