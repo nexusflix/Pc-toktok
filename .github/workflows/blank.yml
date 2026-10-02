@@ -14,7 +14,8 @@ jobs:
     timeout-minutes: 350
 
     env:
-      RDP_USER: DANIEL
+      RDP_USER: "DANIEL GAME"
+      RDP_PASS: "DANIEL@2026!"
       BACKUP_RETENTION: 5
       BACKUP_INTERVAL_SECONDS: 600
       MAX_RUNTIME_SECONDS: 33000
@@ -77,55 +78,21 @@ jobs:
 
 
       # =========================================================
-      # 2. CRIAR USUÁRIO ADMINISTRADOR
+      # 2. CRIAR USUÁRIO ADMINISTRADOR COM SENHA FIXA
       # =========================================================
 
-      - name: Create RDP User with Secure Password
+      - name: Create Fixed RDP User
         shell: powershell
         run: |
 
           $ErrorActionPreference = "Stop"
 
           Write-Host "=========================================="
-          Write-Host " CRIANDO USUÁRIO ADMINISTRADOR"
+          Write-Host " CRIANDO USUÁRIO FIXO"
           Write-Host "=========================================="
 
-          Add-Type -AssemblyName System.Security
-
-          $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-              Special = (
-                  [char[]](33..47) +
-                  [char[]](58..64) +
-                  [char[]](91..96) +
-                  [char[]](123..126)
-              )
-          }
-
-          $rawPassword = @()
-
-          $rawPassword += `
-            $charSet.Upper |
-            Get-Random -Count 4
-
-          $rawPassword += `
-            $charSet.Lower |
-            Get-Random -Count 4
-
-          $rawPassword += `
-            $charSet.Number |
-            Get-Random -Count 4
-
-          $rawPassword += `
-            $charSet.Special |
-            Get-Random -Count 4
-
-          $password = -join (
-              $rawPassword |
-              Sort-Object { Get-Random }
-          )
+          $userName = $env:RDP_USER
+          $password = $env:RDP_PASS
 
           $securePass = ConvertTo-SecureString `
             $password `
@@ -134,11 +101,11 @@ jobs:
 
 
           # -----------------------------------------------------
-          # REMOVER USUÁRIO ANTIGO
+          # REMOVER USUÁRIO ANTIGO (SE EXISTIR)
           # -----------------------------------------------------
 
           $existing = Get-LocalUser `
-            -Name $env:RDP_USER `
+            -Name $userName `
             -ErrorAction SilentlyContinue
 
           if ($existing) {
@@ -148,7 +115,7 @@ jobs:
               Write-Host "Removendo usuário antigo..."
 
               Remove-LocalUser `
-                -Name $env:RDP_USER
+                -Name $userName
           }
 
 
@@ -157,7 +124,7 @@ jobs:
           # -----------------------------------------------------
 
           New-LocalUser `
-            -Name $env:RDP_USER `
+            -Name $userName `
             -Password $securePass `
             -AccountNeverExpires `
             -PasswordNeverExpires
@@ -169,7 +136,7 @@ jobs:
 
           Add-LocalGroupMember `
             -Group "Administrators" `
-            -Member $env:RDP_USER
+            -Member $userName
 
 
           # -----------------------------------------------------
@@ -178,14 +145,14 @@ jobs:
 
           Add-LocalGroupMember `
             -Group "Remote Desktop Users" `
-            -Member $env:RDP_USER
+            -Member $userName
 
 
           # -----------------------------------------------------
-          # GUARDAR CREDENCIAIS NO FORMATO DO CÓDIGO ORIGINAL
+          # GUARDAR CREDENCIAIS NO ENV
           # -----------------------------------------------------
 
-          echo "RDP_CREDS=User: $env:RDP_USER | Password: $password" >> $env:GITHUB_ENV
+          echo "RDP_CREDS=User: $userName | Password: $password" >> $env:GITHUB_ENV
           echo "PLAIN_PASS=$password" >> $env:GITHUB_ENV
 
 
@@ -194,7 +161,7 @@ jobs:
           # -----------------------------------------------------
 
           $checkUser = Get-LocalUser `
-            -Name $env:RDP_USER `
+            -Name $userName `
             -ErrorAction SilentlyContinue
 
           if (-not $checkUser) {
@@ -210,8 +177,8 @@ jobs:
           Write-Host " USUÁRIO CRIADO"
           Write-Host "=========================================="
           Write-Host ""
-          Write-Host "Usuário: $env:RDP_USER"
-          Write-Host "Senha criada e armazenada com sucesso."
+          Write-Host "Usuário: $userName"
+          Write-Host "Senha fixa configurada com sucesso."
           Write-Host ""
 
 
@@ -227,7 +194,7 @@ jobs:
           name_is_regexp: true
           path: C:\RDP\Restore
           search_artifacts: true
-          allow_failing_artifacts_configured: true
+          if_no_artifact_found: warn
 
       - name: Restore User Profile Backup
         shell: powershell
@@ -656,7 +623,7 @@ jobs:
 
 
       # =========================================================
-      # 12. ENVIAR BACKUP v2
+      # 12. ENVIAR BACKUP
       # =========================================================
 
       - name: Upload RDP Backup
